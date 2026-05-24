@@ -88,8 +88,14 @@ class TestOpenAICompatibleEmbeddingEngine:
         engine = self._make_engine(max_completion_tokens=2048)
         assert engine.max_completion_tokens == 2048
 
-    def test_endpoint_normalization(self):
-        """Endpoint without /v1 gets /v1 appended for the SDK base_url."""
+    def test_endpoint_normalization(self, monkeypatch):
+        """Endpoint without /v1 gets /v1 appended for the SDK base_url.
+
+        Phase 8.4.2 platform-patch: explicitly delenv COGNEE_EMBEDDING_NO_V1 so
+        this test always exercises the default normalization path regardless of
+        the shell env state when pytest runs.
+        """
+        monkeypatch.delenv("COGNEE_EMBEDDING_NO_V1", raising=False)
         engine = self._make_engine(endpoint="http://localhost:8099")
         assert str(engine._client._base_url).rstrip("/").endswith("/v1")
 
@@ -99,9 +105,44 @@ class TestOpenAICompatibleEmbeddingEngine:
         # Both should produce equivalent normalized URLs
         assert str(engine._client._base_url) == str(engine2._client._base_url)
 
-    def test_endpoint_normalization_strips_embeddings_suffix(self):
-        """Endpoint with /v1/embeddings should not produce /v1/embeddings/v1."""
+    def test_endpoint_normalization_strips_embeddings_suffix(self, monkeypatch):
+        """Endpoint with /v1/embeddings should not produce /v1/embeddings/v1.
+
+        Phase 8.4.2 platform-patch: same delenv discipline as above.
+        """
+        monkeypatch.delenv("COGNEE_EMBEDDING_NO_V1", raising=False)
         engine = self._make_engine(endpoint="http://localhost:8099/v1/embeddings")
         base_url = str(engine._client._base_url).rstrip("/")
         assert base_url.endswith("/v1")
         assert "/embeddings" not in base_url
+
+    def test_endpoint_normalization_no_v1_true(self, monkeypatch):
+        """PLATFORM-PATCH (gamemagick 2026-05-24): COGNEE_EMBEDDING_NO_V1=true
+        bypasses the /v1 normalization. Endpoint passed through as-is so the
+        openai SDK POSTs to {base}/embeddings without the /v1 prefix.
+
+        Use case: infinity-emb 0.0.77 serves /embeddings (no /v1).
+        """
+        monkeypatch.setenv("COGNEE_EMBEDDING_NO_V1", "true")
+        engine = self._make_engine(endpoint="http://infinity.local:9303")
+        # Base URL is the endpoint as-is (no /v1 appended). openai SDK still
+        # appends /embeddings to this base when calling embeddings.create.
+        base_url = str(engine._client._base_url).rstrip("/")
+        assert base_url == "http://infinity.local:9303", (
+            f"Expected base_url 'http://infinity.local:9303' (no /v1 appended); "
+            f"got: {base_url!r}"
+        )
+
+    def test_endpoint_normalization_no_v1_strips_trailing_v1(self, monkeypatch):
+        """PLATFORM-PATCH (gamemagick 2026-05-24) CON-5 guard: when
+        COGNEE_EMBEDDING_NO_V1=true AND EMBEDDING_ENDPOINT accidentally ends
+        with /v1, strip the trailing /v1 so the openai SDK doesn't silently
+        produce /v1/embeddings against a server that serves /embeddings.
+        """
+        monkeypatch.setenv("COGNEE_EMBEDDING_NO_V1", "true")
+        engine = self._make_engine(endpoint="http://infinity.local:9303/v1")
+        base_url = str(engine._client._base_url).rstrip("/")
+        assert base_url == "http://infinity.local:9303", (
+            f"Expected trailing /v1 stripped to 'http://infinity.local:9303'; "
+            f"got: {base_url!r}"
+        )

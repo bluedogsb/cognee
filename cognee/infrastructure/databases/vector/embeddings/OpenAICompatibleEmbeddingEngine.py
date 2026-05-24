@@ -102,13 +102,27 @@ class OpenAICompatibleEmbeddingEngine(EmbeddingEngine):
         enable_mocking = os.getenv("MOCK_EMBEDDING", "false").lower()
         self.mock = enable_mocking in ("true", "1", "yes")
 
-        # Normalise the base URL: the openai SDK appends /embeddings automatically,
-        # so we need the URL to end with /v1 (not /v1/embeddings).
+        # Normalise the base URL: the openai SDK appends /embeddings automatically.
+        # PLATFORM-PATCH (gamemagick 2026-05-24): added COGNEE_EMBEDDING_NO_V1 opt-out
+        # so that OpenAI-compat servers serving /embeddings WITHOUT a /v1 prefix
+        # (e.g. infinity-emb 0.0.77 — https://github.com/michaelfeil/infinity) work
+        # without a sidecar. When unset/false, original behavior preserved: URL
+        # normalized to end with /v1 so SDK calls /v1/embeddings (vLLM, TEI, llama.cpp).
+        # When set: strip any trailing /v1 so EMBEDDING_ENDPOINT ending with /v1
+        # doesn't silently produce /v1/embeddings.
+        # See PLATFORM_PATCHES.md in fork root for full rationale + upstream-sync note.
         base = self.endpoint.rstrip("/")
-        if base.endswith("/v1/embeddings"):
-            base = base[: -len("/embeddings")]
-        if not base.endswith("/v1"):
-            base = base + "/v1"
+        no_v1_prefix = os.getenv("COGNEE_EMBEDDING_NO_V1", "").lower() in ("true", "1", "yes")
+        if no_v1_prefix:
+            # Strip a trailing /v1 if user accidentally included it.
+            if base.endswith("/v1"):
+                base = base[: -len("/v1")]
+            # Pass remainder as-is; SDK will POST to {base}/embeddings (no /v1).
+        else:
+            if base.endswith("/v1/embeddings"):
+                base = base[: -len("/embeddings")]
+            if not base.endswith("/v1"):
+                base = base + "/v1"
         self._client = AsyncOpenAI(api_key=self.api_key, base_url=base)
 
     @retry(
