@@ -1129,6 +1129,7 @@ async def recall(
     datasets: str = None,
     session_id: str = None,
     top_k: int = 10,
+    scope: str = None,
 ) -> list:
     """Search memory with auto-routing and session awareness.
 
@@ -1138,6 +1139,12 @@ async def recall(
 
     Auto-routing picks the best search strategy when search_type
     is not specified.
+
+    PLATFORM-PATCH (gamemagick V2-7): added `scope` parameter so callers
+    can opt into source-restriction (e.g. "session" for session-only
+    recall, bypassing cognee's session→graph auto_fallthrough). Valid
+    values: "auto" (default), "graph", "session", "trace",
+    "graph_context", "all". See cognee/memory/entries.py:75-78.
 
     Parameters
     ----------
@@ -1153,6 +1160,10 @@ async def recall(
         Session ID for session-first search.
     top_k : int
         Maximum results to return (default: 10).
+    scope : str, optional
+        Restrict recall sources. "auto" (default) picks session+graph
+        with auto-fallthrough when session_id is set; "session" forces
+        session-only (no graph fallback); "graph" forces graph-only.
     """
     with redirect_stdout(sys.stderr):
         try:
@@ -1164,6 +1175,7 @@ async def recall(
                 datasets=dataset_list,
                 session_id=session_id,
                 top_k=normalized_top_k,
+                scope=scope,
             )
             return [
                 types.TextContent(

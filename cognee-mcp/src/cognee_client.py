@@ -8,7 +8,7 @@ This module provides a unified interface for interacting with Cognee, supporting
 
 import sys
 import hashlib
-from typing import Optional, Any, List, Dict
+from typing import Optional, Any, List, Dict, Union
 from uuid import UUID
 from contextlib import redirect_stdout
 import httpx
@@ -502,8 +502,19 @@ class CogneeClient:
         datasets: Optional[List[str]] = None,
         session_id: Optional[str] = None,
         top_k: int = 10,
+        scope: Optional[Union[str, List[str]]] = None,
     ) -> Any:
-        """Search memory via recall() with auto-routing and session awareness."""
+        """Search memory via recall() with auto-routing and session awareness.
+
+        PLATFORM-PATCH (gamemagick V2-7): added `scope` parameter (forwarded
+        to cognee API `/v1/recall` payload + in-process `cognee.recall`
+        kwargs). Cognee's `RecallPayloadDTO.scope` already accepts the field
+        (recall/routers/get_recall_router.py:41-48) and the SDK-level
+        `recall()` already takes it (api/v1/recall/recall.py:323) — the MCP
+        wrapper was the only layer not threading it through. Lets callers
+        opt into source-restriction (e.g. `scope="session"` for session-only
+        recall, bypassing cognee's session→graph auto_fallthrough).
+        """
         if self.use_api:
             endpoint = f"{self.api_url}/api/v1/recall"
             payload = {"query": query_text, "top_k": top_k, "search_type": None}
@@ -513,6 +524,8 @@ class CogneeClient:
                 payload["datasets"] = datasets
             if session_id:
                 payload["session_id"] = session_id
+            if scope is not None:
+                payload["scope"] = scope
             response = await self.client.post(endpoint, json=payload, headers=self._get_headers())
             response.raise_for_status()
             return response.json()
@@ -527,6 +540,8 @@ class CogneeClient:
                     kwargs["datasets"] = datasets
                 if session_id:
                     kwargs["session_id"] = session_id
+                if scope is not None:
+                    kwargs["scope"] = scope
                 return await self.cognee.recall(query_text=query_text, **kwargs)
 
     async def forget(
