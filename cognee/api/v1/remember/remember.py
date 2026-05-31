@@ -102,6 +102,68 @@ def _data_to_text(data) -> str:
     return f"[{type(data).__name__}]"
 
 
+async def _data_to_text_async(data) -> str:
+    """Async variant of _data_to_text that reads UploadFile contents.
+
+    PLATFORM-PATCH (gamemagick V2-6): the sync _data_to_text cannot
+    await UploadFile.read(), so it falls back to placeholder strings
+    ("[file: name]", "[UploadFile]") that trigger
+    _SESSION_PLACEHOLDER_PREFIXES skip in _add_to_session. This variant
+    reads upload bytes for callers in async context.
+    """
+    if isinstance(data, str):
+        return data
+    if isinstance(data, list):
+        parts: list[str] = []
+        for item in data:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            read_fn = getattr(item, "read", None)
+            if callable(read_fn):
+                try:
+                    content = await read_fn()
+                    # seek(0) is defensive: the session path at
+                    # remember() returns immediately after _add_to_session
+                    # so no downstream consumer reads `data` again — but
+                    # we reset anyway in case a future caller path relies
+                    # on the upload still being readable.
+                    seek_fn = getattr(item, "seek", None)
+                    if callable(seek_fn):
+                        try:
+                            await seek_fn(0)
+                        except TypeError:
+                            seek_fn(0)
+                    if isinstance(content, bytes):
+                        content = content.decode("utf-8", errors="replace")
+                    parts.append(content)
+                    continue
+                except Exception as e:
+                    logger.warning("remember: failed to read upload item: %s", e)
+            if hasattr(item, "name"):
+                parts.append(f"[file: {item.name}]")
+            else:
+                parts.append(f"[{type(item).__name__}]")
+        return "\n\n".join(parts)
+    read_fn = getattr(data, "read", None)
+    if callable(read_fn):
+        try:
+            content = await read_fn()
+            # seek(0) defensive — see comment in list branch above.
+            seek_fn = getattr(data, "seek", None)
+            if callable(seek_fn):
+                try:
+                    await seek_fn(0)
+                except TypeError:
+                    seek_fn(0)
+            if isinstance(content, bytes):
+                content = content.decode("utf-8", errors="replace")
+            return content
+        except Exception as e:
+            logger.warning("remember: failed to read upload data: %s", e)
+    return _data_to_text(data)
+
+
 _SESSION_PLACEHOLDER_PREFIXES = ("[UploadFile]", "[file:", "[BinaryIO", "[SpooledTemporaryFile")
 
 
@@ -124,7 +186,12 @@ async def _add_to_session(session_id: str, data, user):
     if not user_id:
         return
 
-    text = _data_to_text(data)
+    # PLATFORM-PATCH (gamemagick V2-6): use async variant so UploadFile
+    # content is read into text BEFORE the placeholder check. The sync
+    # helper produces "[file: name]" / "[UploadFile]" placeholders for
+    # HTTP API uploads (POST /v1/remember), which then silently match
+    # _SESSION_PLACEHOLDER_PREFIXES and skip the session write.
+    text = await _data_to_text_async(data)
     stripped = text.strip()
     if not stripped:
         return
